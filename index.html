@@ -411,14 +411,21 @@ function ensureCtx() {
   master = ctx.createGain();
   master.gain.value = volToGain(document.getElementById("vol").value);
 
-  const sink = ctx.createMediaStreamDestination();
-  limiter.connect(master).connect(sink);
-
-  // Route through an <audio> element so Android treats it as media
-  // playback (keeps running with the screen off, shows in media controls).
-  mediaEl = new Audio();
-  mediaEl.srcObject = sink.stream;
-  mediaEl.loop = true;
+  // Route through an <audio> element (via a MediaStream sink) so the OS
+  // treats playback as media — keeps running with the screen off, shows
+  // in lock-screen/media controls. Some WebKit builds lack or misbehave
+  // on createMediaStreamDestination, so fall back to a direct connection
+  // (foreground playback only) if it's unavailable.
+  try {
+    const sink = ctx.createMediaStreamDestination();
+    limiter.connect(master).connect(sink);
+    mediaEl = new Audio();
+    mediaEl.srcObject = sink.stream;
+    mediaEl.loop = true;
+  } catch (e) {
+    limiter.connect(master).connect(ctx.destination);
+    mediaEl = null;
+  }
 
   if ("mediaSession" in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({
