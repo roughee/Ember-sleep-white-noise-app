@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>Ember — Sleep Sounds</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("sw.js"));
+}
+</script>
+<style>
+/* ============================================================
+   EMBER — sleep sound app
+   Design notes:
+   - True #000 background: OLED-friendly (Pixel 9 Pro XL), minimal
+     light emission at night.
+   - Warm amber palette only. No blue/white UI light — short-wave
+     (blue) light suppresses melatonin, so the whole interface
+     stays in the long-wavelength range.
+   - Signature element: the "ember" orb breathes at 6 breaths/min
+     (10s cycle), a paced-breathing tempo shown to aid sleep onset.
+   ============================================================ */
+:root {
+  --bg: #000000;
+  --ink: #d9b38c;        /* warm sand — primary text */
+  --ink-dim: #7a6350;    /* muted */
+  --ink-faint: #40352b;  /* hairlines, idle states */
+  --ember: #e8863a;      /* the ember */
+  --ember-deep: #7a3d12;
+  --surface: #0d0906;
+  --danger: #b05c3a;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Roboto", sans-serif;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 100dvh;
+  padding: max(env(safe-area-inset-top), 20px) 24px max(env(safe-area-inset-bottom), 24px);
+  user-select: none;
+  -webkit-user-select: none;
+  overflow-x: hidden;
+}
+
+header {
+  width: 100%;
+  max-width: 440px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding-bottom: 6px;
+}
+.wordmark {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.42em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+#dimBtn {
+  background: none;
+  border: 1px solid var(--ink-faint);
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 7px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+/* ---------- The ember orb ---------- */
+.orb-stage {
+  position: relative;
+  width: 210px;
+  height: 210px;
+  margin: 4vh 0 3vh;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.orb {
+  width: 130px;
+  height: 130px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 42% 38%,
+    #f7b877 0%, var(--ember) 34%, var(--ember-deep) 72%, #1c0b02 100%);
+  box-shadow:
+    0 0 40px 6px rgba(232, 134, 58, 0.18),
+    0 0 120px 20px rgba(232, 134, 58, 0.07);
+  transition: box-shadow 1.6s ease, filter 1.6s ease, transform 0.9s ease;
+  filter: saturate(0.35) brightness(0.5);
+}
+.orb-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(232, 134, 58, 0.14);
+  transform: scale(0.78);
+  transition: transform 1.6s ease, opacity 1.6s ease;
+  opacity: 0;
+  pointer-events: none;
+}
+/* Breathing pace: 10s cycle = 6 breaths/min (slow-paced breathing) */
+@keyframes breathe {
+  0%   { transform: scale(0.86); }
+  40%  { transform: scale(1.0); }   /* ~4s inhale */
+  55%  { transform: scale(1.0); }   /* brief hold */
+  100% { transform: scale(0.86); }  /* ~4.5s exhale */
+}
+@keyframes breathe-ring {
+  0%   { transform: scale(0.80); opacity: 0.0; }
+  40%  { transform: scale(1.02); opacity: 0.5; }
+  100% { transform: scale(0.80); opacity: 0.0; }
+}
+body.playing .orb {
+  filter: saturate(1) brightness(1);
+  animation: breathe 10s ease-in-out infinite;
+  box-shadow:
+    0 0 60px 10px rgba(232, 134, 58, 0.30),
+    0 0 160px 34px rgba(232, 134, 58, 0.10);
+}
+body.playing .orb-ring { animation: breathe-ring 10s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  body.playing .orb, body.playing .orb-ring { animation: none; }
+  body.playing .orb-ring { opacity: 0.35; transform: scale(1); }
+}
+.orb-hint {
+  position: absolute;
+  bottom: -6px;
+  width: 100%;
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  transition: opacity 0.8s;
+}
+body.playing .orb-hint { opacity: 0; }
+
+/* countdown inside stage */
+#countdown {
+  position: absolute;
+  top: -14px;
+  width: 100%;
+  text-align: center;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.28em;
+  color: var(--ink-dim);
+  opacity: 0;
+  transition: opacity 0.8s;
+}
+body.timed #countdown { opacity: 1; }
+
+/* ---------- Sections ---------- */
+main { width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: 26px; }
+.label {
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  margin-bottom: 12px;
+}
+
+/* Sounds */
+.sounds { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.sound-btn {
+  background: var(--surface);
+  border: 1px solid var(--ink-faint);
+  border-radius: 16px;
+  color: var(--ink-dim);
+  padding: 16px 6px 13px;
+  font: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  min-height: 76px;
+  transition: border-color 0.4s, color 0.4s, background 0.4s;
+}
+.sound-btn .glyph { width: 26px; height: 26px; opacity: 0.8; }
+.sound-btn .glyph path, .sound-btn .glyph circle { stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; }
+.sound-btn span { font-size: 12.5px; letter-spacing: 0.04em; }
+.sound-btn.active {
+  border-color: var(--ember);
+  color: var(--ember);
+  background: #170c04;
+}
+.sound-note { font-size: 12px; line-height: 1.55; color: var(--ink-dim); margin-top: 12px; min-height: 3.1em; }
+
+/* Timer */
+.timers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.timer-btn {
+  background: none;
+  border: 1px solid var(--ink-faint);
+  border-radius: 999px;
+  color: var(--ink-dim);
+  padding: 12px 0;
+  font: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: border-color 0.4s, color 0.4s;
+}
+.timer-btn.active { border-color: var(--ember); color: var(--ember); }
+.timer-note { font-size: 12px; color: var(--ink-dim); margin-top: 12px; line-height: 1.55; }
+
+/* Volume */
+.vol-row { display: flex; align-items: center; gap: 14px; }
+input[type="range"] {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 40px;
+  background: transparent;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px;
+  background: linear-gradient(to right, var(--ember) var(--fill, 55%), var(--ink-faint) var(--fill, 55%));
+  border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 26px; height: 26px;
+  margin-top: -11.5px;
+  border-radius: 50%;
+  background: var(--ember);
+  border: none;
+  box-shadow: 0 0 14px rgba(232,134,58,0.35);
+}
+input[type="range"]::-moz-range-track { height: 3px; background: var(--ink-faint); border-radius: 2px; }
+input[type="range"]::-moz-range-thumb { width: 26px; height: 26px; border-radius: 50%; background: var(--ember); border: none; }
+#volPct { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--ink-dim); width: 4ch; text-align: right; }
+.vol-note { font-size: 12px; color: var(--ink-dim); margin-top: 10px; line-height: 1.55; }
+
+/* Dim overlay */
+#dimOverlay {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 1.2s ease;
+  z-index: 50;
+}
+body.dimmed #dimOverlay { opacity: 0.86; pointer-events: auto; }
+#dimOverlay .wake {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--ink-faint);
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+}
+
+footer {
+  margin-top: 30px;
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.05em;
+  text-align: center;
+  line-height: 1.7;
+  max-width: 440px;
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark">Ember</div>
+  <button id="dimBtn">Dim screen</button>
+</header>
+
+<div class="orb-stage" id="orbStage" role="button" aria-label="Play or pause sound" tabindex="0">
+  <div id="countdown">–</div>
+  <div class="orb-ring"></div>
+  <div class="orb"></div>
+  <div class="orb-hint">Tap to play</div>
+</div>
+
+<main>
+  <section>
+    <div class="label">Sound</div>
+    <div class="sounds" id="sounds">
+      <button class="sound-btn active" data-sound="pink" aria-pressed="true">
+        <svg class="glyph" viewBox="0 0 24 24"><path d="M3 14 Q6 8 9 13 T15 12 T21 10"/></svg>
+        <span>Pink noise</span>
+      </button>
+      <button class="sound-btn" data-sound="brown" aria-pressed="false">
+        <svg class="glyph" viewBox="0 0 24 24"><path d="M3 15 Q7 10 12 14 T21 13"/><path d="M3 18 Q8 15 13 17 T21 16"/></svg>
+        <span>Brown noise</span>
+      </button>
+      <button class="sound-btn" data-sound="white" aria-pressed="false">
+        <svg class="glyph" viewBox="0 0 24 24"><path d="M3 12 L5 8 L7 15 L9 6 L11 16 L13 9 L15 14 L17 8 L19 13 L21 11"/></svg>
+        <span>White noise</span>
+      </button>
+      <button class="sound-btn" data-sound="rain" aria-pressed="false">
+        <svg class="glyph" viewBox="0 0 24 24"><path d="M6 4 v5 M12 3 v6 M18 4 v5 M6 14 v5 M12 13 v6 M18 14 v5"/></svg>
+        <span>Rain</span>
+      </button>
+      <button class="sound-btn" data-sound="ocean" aria-pressed="false">
+        <svg class="glyph" viewBox="0 0 24 24"><path d="M3 10 Q7 6 12 10 T21 10"/><path d="M3 16 Q7 12 12 16 T21 16"/></svg>
+        <span>Ocean</span>
+      </button>
+      <button class="sound-btn" data-sound="fan" aria-pressed="false">
+        <svg class="glyph" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M12 10 Q11 5 15 4 Q17 6 14 10 M14 12 Q19 11 20 15 Q18 17 14 14 M10 13 Q7 18 4 16 Q4 13 10 12"/></svg>
+        <span>Fan hum</span>
+      </button>
+    </div>
+    <div class="sound-note" id="soundNote"></div>
+  </section>
+
+  <section>
+    <div class="label">Timer</div>
+    <div class="timers" id="timers">
+      <button class="timer-btn" data-min="30">30 min</button>
+      <button class="timer-btn active" data-min="60">1 hour</button>
+      <button class="timer-btn" data-min="120">2 hours</button>
+      <button class="timer-btn" data-min="0">All night</button>
+    </div>
+    <div class="timer-note">Sound fades out gently over the final 2 minutes — no abrupt stop that could rouse you.</div>
+  </section>
+
+  <section>
+    <div class="label">Volume</div>
+    <div class="vol-row">
+      <input type="range" id="vol" min="0" max="100" value="55" aria-label="Volume">
+      <div id="volPct">55</div>
+    </div>
+    <div class="vol-note">Output is capped well below full loudness. For a safe sleep level (~50 dB, a quiet-conversation hush), set your phone's media volume to about half and place the phone at arm's length.</div>
+  </section>
+</main>
+
+<footer>
+  Pink noise · masking-based sounds · fade-out timers — built on sleep-acoustics research.<br>
+  All audio is generated on-device. Works fully offline.
+</footer>
+
+<div id="dimOverlay"><div class="wake">Tap to wake</div></div>
+
+<script>
+"use strict";
+/* ============================================================
+   AUDIO ENGINE — all sounds synthesized with Web Audio.
+   Why these sounds:
+   - Pink noise: the most-studied sleep sound; equal energy per
+     octave (like steady rain). Trials report deeper slow-wave
+     sleep and easier sleep onset in noisy environments.
+   - White noise: strongest masker of sudden environmental noise
+     (traffic, doors); evidence for faster sleep onset in loud
+     surroundings.
+   - Brown noise: pink's deeper cousin (-6 dB/octave); less
+     hiss, favored by people who find white noise harsh.
+   - Rain / Ocean / Fan: shaped noise. Steady natural soundscapes
+     lower physiological arousal vs. silence in noisy settings.
+   Safety:
+   - Master gain hard-capped at MAX_GAIN + a limiter, so the app
+     can never output damaging levels even at 100%.
+   - Timers end with a 120 s linear fade (abrupt offset is itself
+     an arousal trigger).
+   ============================================================ */
+
+const MAX_GAIN = 0.32;           // hard cap on synth output
+const FADE_OUT_SEC = 120;        // gentle fade at timer end
+
+let ctx = null, master = null, limiter = null, current = null;
+let mediaEl = null;              // <audio> sink → keeps playing when screen locks
+let playing = false;
+let timerMin = 60;               // default: 1 hour
+let timerEnd = null, tickInt = null, fadeStarted = false;
+let wakeLock = null;
+
+const SOUND_NOTES = {
+  pink:  "Even, rain-like hush. The most-studied sleep sound — linked to deeper slow-wave sleep and easier sleep onset.",
+  brown: "Deeper, softer rumble with no hiss. Same masking idea as pink, weighted toward low frequencies.",
+  white: "Full-spectrum static. The strongest masker of sudden noises — best if your environment is loud or unpredictable.",
+  rain:  "Steady rainfall, shaped from pink noise. Natural, constant soundscapes help lower arousal at bedtime.",
+  ocean: "Slow waves every ~12 seconds. The rhythm sits near a resting breath rate — breathe with it.",
+  fan:   "The classic box-fan drone: low hum plus soft broadband air noise."
+};
+let currentSound = "pink";
+
+function ensureCtx() {
+  if (ctx) return;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+  // safety limiter → master gain → media sink
+  limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = -18;
+  limiter.knee.value = 12;
+  limiter.ratio.value = 16;
+  limiter.attack.value = 0.003;
+  limiter.release.value = 0.25;
+
+  master = ctx.createGain();
+  master.gain.value = volToGain(document.getElementById("vol").value);
+
+  const sink = ctx.createMediaStreamDestination();
+  limiter.connect(master).connect(sink);
+
+  // Route through an <audio> element so Android treats it as media
+  // playback (keeps running with the screen off, shows in media controls).
+  mediaEl = new Audio();
+  mediaEl.srcObject = sink.stream;
+  mediaEl.loop = true;
+
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: "Ember — sleep sounds", artist: "sleeping…"
+    });
+    navigator.mediaSession.setActionHandler("pause", stopAll);
+    navigator.mediaSession.setActionHandler("stop", stopAll);
+  }
+}
+
+function volToGain(v) {
+  const x = v / 100;
+  return x * x * MAX_GAIN;   // perceptual-ish curve, capped
+}
+
+/* ---- noise buffer factory (4 s stereo loops, crossfaded ends) ---- */
+function noiseBuffer(kind) {
+  const secs = 4, len = ctx.sampleRate * secs;
+  const buf = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    let b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0, last=0;
+    for (let i = 0; i < len; i++) {
+      const w = Math.random() * 2 - 1;
+      if (kind === "white") {
+        d[i] = w * 0.45;
+      } else if (kind === "pink") {
+        // pink noise approximation via cascaded one-pole filters
+        b0 = 0.99886*b0 + w*0.0555179;
+        b1 = 0.99332*b1 + w*0.0750759;
+        b2 = 0.96900*b2 + w*0.1538520;
+        b3 = 0.86650*b3 + w*0.3104856;
+        b4 = 0.55000*b4 + w*0.5329522;
+        b5 = -0.7616*b5 - w*0.0168980;
+        d[i] = (b0+b1+b2+b3+b4+b5+b6 + w*0.5362) * 0.11;
+        b6 = w * 0.115926;
+      } else { // brown
+        last = (last + 0.02*w) / 1.02;
+        d[i] = last * 3.2;
+      }
+    }
+    // crossfade tail into head for a seamless loop
+    const xf = Math.floor(ctx.sampleRate * 0.05);
+    for (let i = 0; i < xf; i++) {
+      const t = i / xf;
+      d[i] = d[i]*t + d[len-xf+i]*(1-t);
+    }
+  }
+  return buf;
+}
+
+function makeSource(kind) {
+  const nodes = [];
+  const out = ctx.createGain();
+  const src = ctx.createBufferSource();
+  src.loop = true;
+
+  if (kind === "pink" || kind === "white" || kind === "brown") {
+    src.buffer = noiseBuffer(kind);
+    src.connect(out);
+  }
+  else if (kind === "rain") {
+    src.buffer = noiseBuffer("pink");
+    const hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 350;
+    const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 8000;
+    src.connect(hp).connect(lp).connect(out);
+    out.gain.value = 1.25;
+    nodes.push(hp, lp);
+  }
+  else if (kind === "ocean") {
+    src.buffer = noiseBuffer("brown");
+    const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 850;
+    const swell = ctx.createGain();
+    // wave every ~12 s ≈ 5 breaths/min — pace your exhale to the wave
+    const lfo = ctx.createOscillator(); lfo.frequency.value = 1/12;
+    const lfoAmt = ctx.createGain(); lfoAmt.gain.value = 0.42;
+    lfo.connect(lfoAmt).connect(swell.gain);
+    swell.gain.value = 0.62;
+    lfo.start();
+    src.connect(lp).connect(swell).connect(out);
+    out.gain.value = 1.5;
+    nodes.push(lp, swell, lfo, lfoAmt);
+  }
+  else if (kind === "fan") {
+    src.buffer = noiseBuffer("brown");
+    const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 500; lp.Q.value = 0.6;
+    const hum = ctx.createOscillator(); hum.type = "triangle"; hum.frequency.value = 62;
+    const humG = ctx.createGain(); humG.gain.value = 0.05;
+    hum.connect(humG).connect(out);
+    hum.start();
+    src.connect(lp).connect(out);
+    out.gain.value = 1.3;
+    nodes.push(lp, hum, humG);
+  }
+
+  out.connect(limiter);
+  src.start();
+  return { src, out, nodes,
+    stop() {
+      try { src.stop(); } catch(e) {}
+      nodes.forEach(n => { if (n.stop) { try { n.stop(); } catch(e) {} } });
+      out.disconnect();
+    }
+  };
+}
+
+/* ---------- playback control ---------- */
+async function startAll() {
+  ensureCtx();
+  if (ctx.state === "suspended") await ctx.resume();
+  swapSound(currentSound, true);
+  try { await mediaEl.play(); } catch(e) {}
+  playing = true;
+  document.body.classList.add("playing");
+  startTimer();
+  requestDimWakeLock();
+}
+
+function stopAll() {
+  if (current) { current.stop(); current = null; }
+  if (mediaEl) mediaEl.pause();
+  playing = false;
+  fadeStarted = false;
+  document.body.classList.remove("playing", "timed");
+  clearInterval(tickInt); tickInt = null; timerEnd = null;
+  if (master) master.gain.cancelScheduledValues(ctx.currentTime);
+  if (master) master.gain.setValueAtTime(volToGain(volEl.value), ctx.currentTime);
+  releaseWakeLock();
+}
+
+function swapSound(kind, hard) {
+  currentSound = kind;
+  if (!ctx || (!playing && !hard)) return;
+  const old = current;
+  current = makeSource(kind);
+  // quick crossfade — capture the sound's intended level first
+  const target = current.out.gain.value || 1;
+  current.out.gain.setValueAtTime(0.0001, ctx.currentTime);
+  current.out.gain.exponentialRampToValueAtTime(target, ctx.currentTime + 0.8);
+  if (old) {
+    old.out.gain.setValueAtTime(old.out.gain.value || 1, ctx.currentTime);
+    old.out.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.8);
+    setTimeout(() => old.stop(), 900);
+  }
+}
+
+/* ---------- timer ---------- */
+function startTimer() {
+  clearInterval(tickInt); fadeStarted = false;
+  if (timerMin === 0) { timerEnd = null; document.body.classList.remove("timed"); return; }
+  timerEnd = Date.now() + timerMin * 60000;
+  document.body.classList.add("timed");
+  tick();
+  tickInt = setInterval(tick, 1000);
+}
+
+function tick() {
+  if (!timerEnd) return;
+  const left = Math.max(0, timerEnd - Date.now());
+  const s = Math.ceil(left / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  document.getElementById("countdown").textContent =
+    (h ? h + ":" : "") + String(m).padStart(2, "0") + ":" + String(sec).padStart(2, "0");
+
+  if (left <= FADE_OUT_SEC * 1000 && !fadeStarted && master) {
+    fadeStarted = true;
+    master.gain.cancelScheduledValues(ctx.currentTime);
+    master.gain.setValueAtTime(master.gain.value, ctx.currentTime);
+    master.gain.linearRampToValueAtTime(0.00005, ctx.currentTime + left / 1000);
+  }
+  if (left <= 0) stopAll();
+}
+
+/* ---------- screen dim + wake lock ---------- */
+async function requestDimWakeLock() {
+  // only needed if user dims in-app; audio itself continues with screen off
+  try {
+    if ("wakeLock" in navigator && document.body.classList.contains("dimmed")) {
+      wakeLock = await navigator.wakeLock.request("screen");
+    }
+  } catch(e) {}
+}
+function releaseWakeLock() { if (wakeLock) { wakeLock.release(); wakeLock = null; } }
+
+/* ---------- UI wiring ---------- */
+const volEl = document.getElementById("vol");
+const soundNote = document.getElementById("soundNote");
+soundNote.textContent = SOUND_NOTES[currentSound];
+
+function setFill() {
+  volEl.style.setProperty("--fill", volEl.value + "%");
+  document.getElementById("volPct").textContent = volEl.value;
+}
+setFill();
+
+volEl.addEventListener("input", () => {
+  setFill();
+  if (master && !fadeStarted) {
+    master.gain.setTargetAtTime(volToGain(volEl.value), ctx.currentTime, 0.05);
+  }
+});
+
+document.getElementById("sounds").addEventListener("click", e => {
+  const btn = e.target.closest(".sound-btn");
+  if (!btn) return;
+  document.querySelectorAll(".sound-btn").forEach(b => {
+    b.classList.toggle("active", b === btn);
+    b.setAttribute("aria-pressed", b === btn);
+  });
+  soundNote.textContent = SOUND_NOTES[btn.dataset.sound];
+  swapSound(btn.dataset.sound, false);
+});
+
+document.getElementById("timers").addEventListener("click", e => {
+  const btn = e.target.closest(".timer-btn");
+  if (!btn) return;
+  document.querySelectorAll(".timer-btn").forEach(b => b.classList.toggle("active", b === btn));
+  timerMin = parseInt(btn.dataset.min, 10);
+  if (playing) {
+    // un-fade if a fade was in progress
+    if (fadeStarted && master) {
+      master.gain.cancelScheduledValues(ctx.currentTime);
+      master.gain.setTargetAtTime(volToGain(volEl.value), ctx.currentTime, 0.3);
+      fadeStarted = false;
+    }
+    startTimer();
+  }
+});
+
+const orbStage = document.getElementById("orbStage");
+orbStage.addEventListener("click", () => playing ? stopAll() : startAll());
+orbStage.addEventListener("keydown", e => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); playing ? stopAll() : startAll(); }
+});
+
+document.getElementById("dimBtn").addEventListener("click", async () => {
+  document.body.classList.add("dimmed");
+  await requestDimWakeLock();
+});
+document.getElementById("dimOverlay").addEventListener("click", () => {
+  document.body.classList.remove("dimmed");
+  releaseWakeLock();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && document.body.classList.contains("dimmed")) {
+    requestDimWakeLock();
+  }
+});
+</script>
+</body>
+</html>
