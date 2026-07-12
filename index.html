@@ -446,7 +446,7 @@ function noiseBuffer(kind) {
       if (kind === "white") {
         d[i] = w * 0.45;
       } else if (kind === "pink") {
-        // pink noise approximation via cascaded one-pole filters
+        // pink noise approximation, coefficients per Paul Kellet's method
         b0 = 0.99886*b0 + w*0.0555179;
         b1 = 0.99332*b1 + w*0.0750759;
         b2 = 0.96900*b2 + w*0.1538520;
